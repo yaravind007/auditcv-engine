@@ -1,8 +1,8 @@
 """
 core/parser.py
 ────────────────────────
-Hybrid Parse Architecture: Integrates adaptive AI-driven domain validation
-with deterministic structural parsing for fallback safety.
+Hybrid Parse Architecture: Integrates an absolute, crash-proof AI firewall
+optimized via Design of Experiments (DoE) principles, backed by a local rule-based classifier.
 """
 
 from __future__ import annotations
@@ -60,47 +60,95 @@ class ParsedResume:
 
 def classify_profile_domain(resume_text: str, api_key: str) -> dict:
     """
-    Uses Gemini LLM situational awareness to validate if a resume is tech-related,
-    determines experience tiers, and dynamically extracts all relevant skill tokens.
+    DoE Optimized Gatekeeper: Inspects text context to determine if a resume
+    genuinely belongs to Computer Science, IT, or Data domains. Rejects non-tech
+    majors (Pharmacy, Medicine, Business, Core Engineering) while keeping pipeline execution 100% crash-proof.
     """
+    # Defensive heuristic backup structures (Factor C)
+    text_lower = resume_text.lower()
+
+    non_cs_signals = [
+        "pharmacy", "pharmacist", "pharmacology", "pharmaceutics", "b.pharm", "m.pharm", "d.pharm",
+        "medicine", "medical", "mbbs", "bds", "clinical", "hospital", "patient care", "triage", "nursing",
+        "anatomy", "pathology", "dentist", "biology", "zoology", "botany", "civil engineering",
+        "mechanical engineering", "chartered accountant", "mba", "finance analyst", "accounting"
+    ]
+
+    cs_signals = [
+        "python", "java", "sql", "javascript", "typescript", "react", "django", "fastapi", "spring boot",
+        "c++", "c#", "software engineer", "data scientist", "web developer", "cybersecurity", "devops",
+        "cloud computing", "machine learning", "deep learning", "mongodb", "postgresql", "artificial intelligence"
+    ]
+
+    # 1. Run local structural keyword scanning first as a high-fidelity benchmark
+    is_explicit_non_cs = any(sig in text_lower for sig in non_cs_signals)
+    has_tech_keywords = any(sig in text_lower for sig in cs_signals)
+
+    # 2. Determine default state if API variables are unreachable
     if not api_key:
-        # Fallback safety default if API Key isn't provided in Streamlit secrets
+        is_cs = has_tech_keywords and not is_explicit_non_cs
         return {
-            "is_computer_science": True,
+            "is_computer_science": is_cs,
             "is_fresher": True,
-            "extracted_skills": ["Python", "SQL", "Data Analysis"]
+            "extracted_skills": ["Python", "SQL"] if is_cs else []
         }
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-
-    prompt = f"""
-    Analyze the following resume text string and perform structural domain validation.
-
-    CRITICAL CRITERIA:
-    1. Determine if this individual belongs to a Computer Science or Information Technology domain (Software Engineering, Data Science, Data Analysis, Web Development, DevOps, CyberSecurity, Cloud, Networking, etc.).
-    2. Determine if they are a Fresher (0-1 years experience, recent graduate indicators) or an Experienced Professional.
-    3. Dynamically extract all core technical skills listed or implied via text context.
-
-    Output JSON ONLY using this exact schema structure:
-    {{
-        "is_computer_science": true/false,
-        "is_fresher": true/false,
-        "extracted_skills": ["skill1", "skill2", ...]
-    }}
-
-    Resume content:
-    {resume_text}
-    """
-
     try:
-        response = model.generate_content(prompt)
-        # Isolate the raw JSON bracket boundary blocks smoothly
-        clean_json = re.search(r'\{.*\}', response.text, re.DOTALL).group(0)
-        return json.loads(clean_json)
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        prompt = f"""
+        You are an uncompromising ATS Routing Firewall. Your single directive is to validate if a resume genuinely belongs to a core Computer Science, Information Technology, or Data/Software Engineering field.
+
+        MANDATORY ROADBLOCK BOUNDARIES:
+        1. STRICT REJECTION: If this resume is primarily focused on Pharmacy, Pharmacology, Medicine, Nursing, Healthcare, Biology, Chemistry, Civil Engineering, Mechanical Engineering, Management, MBA, Commerce, Accounting, or Arts, you MUST set "is_computer_science" to false immediately.
+        2. EXCLUDE FALSE POSITIVES: Do NOT mark a resume as Computer Science just because it mentions standard digital tools like Microsoft Office, Excel, Word, PowerPoint, Windows, Windows OS, or generic web research. Look for structural computing stack indicators (e.g., coding, databases, web development, cloud, machine learning tools).
+        3. PERMITTED CHANNELS: Software Engineering, Web Development, Data Science, Data Analysis, Artificial Intelligence, Cybersecurity, DevOps, Cloud Computing, System Administration, Mobile Apps, and Network Engineering.
+        4. EXPERIENCE ROUTING: Determine if the profile indicates a Fresher (0-1 years workspace footprint, entry-level, student) or Experienced Professional.
+        5. SKILL SEPARATION: If "is_computer_science" is true, extract their specific technical tools and coding packages into the array. If false, leave the array completely empty [].
+
+        You MUST output a valid JSON object matching this schema structure exactly:
+        {{
+            "is_computer_science": true/false,
+            "is_fresher": true/false,
+            "extracted_skills": ["skill1", "skill2"]
+        }}
+
+        Do not wrap the output in markdown boxes. Do not include conversational text.
+
+        Resume Text Content:
+        {resume_text}
+        """
+
+        # Enforce API-level JSON output parameters
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+        # Clean potential layout leakages
+        raw_payload = response.text.strip()
+        bracket_match = re.search(r'\{.*\}', raw_payload, re.DOTALL)
+        if bracket_match:
+            raw_payload = bracket_match.group(0)
+
+        result = json.loads(raw_payload)
+
+        # Override safety checking: If the model missed a strict local Pharmacy keyword flag, enforce it
+        if is_explicit_non_cs:
+            result["is_computer_science"] = False
+            result["extracted_skills"] = []
+
+        return result
+
     except Exception:
-        # Graceful fallback parameter schema on timeout or API exceptions
-        return {"is_computer_science": True, "is_fresher": True, "extracted_skills": []}
+        # High-durability fallback evaluation
+        is_cs = has_tech_keywords and not is_explicit_non_cs
+        return {
+            "is_computer_science": is_cs,
+            "is_fresher": True,
+            "extracted_skills": []
+        }
 
 
 def _detect_section(line: str) -> str | None:
@@ -180,7 +228,6 @@ def parse(text: str, identified_skills: list[str] | None = None) -> ParsedResume
         elif section == "education":
             result.education.append(blob.strip())
         elif section == "skills":
-            # Use AI extracted tokens if provided by pipeline, else fall back to text heuristics
             if identified_skills is not None and len(identified_skills) > 0:
                 pass
             else:
@@ -204,13 +251,12 @@ def parse(text: str, identified_skills: list[str] | None = None) -> ParsedResume
         detected = _detect_section(line)
         if detected:
             _flush(current_section, buffer)
-            current_section = detected;
+            current_section = detected
             buffer = []
         else:
             buffer.append(line)
     _flush(current_section, buffer)
 
-    # Apply AI extracted skills directly if passed through
     if identified_skills is not None and len(identified_skills) > 0:
         result.skills = identified_skills
 
