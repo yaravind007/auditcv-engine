@@ -1,12 +1,13 @@
 """
 core/scorer.py
 ────────────────────────
-Adaptive, Multi-Tier 7-Dimension Scoring Engine for AuditCV v2.
-Dynamically adjusts weights and scoring matrices based on experience tier modes.
+Comprehensive Multi-Parameter Evaluation Engine for AuditCV v2.
+Enforces semantic alias mapping, timeline continuity tracking, and multi-factor impact validation.
 """
 
 from __future__ import annotations
-import re, json
+import re
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from core.parser import ParsedResume
@@ -25,6 +26,27 @@ _ACTION_VERBS = _load_verbs()
 _NUMBER_RE = re.compile(r"\b\d+[\d,.]*\s*(%|percent|x|k|m|ms|s|gb|mb|hrs?|days?|weeks?|months?)?\b", re.IGNORECASE)
 _PASSIVE_RE = re.compile(r"\b(was|were|is|are|been|being)\s+\w+ed\b", re.IGNORECASE)
 
+# Strict Date Parsing Regex to Extract Chronological Lifecycles
+_DATE_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|\d{1,2})?[-/\s.]*(\d{4})\s*[-–—to]+\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|\d{1,2})?[-/\s.]*(\d{4}|present|current)\b",
+    re.IGNORECASE
+)
+
+# ── Semantic Alias Mapping Engine ─────────────────────────────────────────────
+_CANONICAL_MAP: dict[str, str] = {
+    "structured query language": "sql", "mysql": "sql", "postgresql": "sql", "sqlite": "sql", "tsql": "sql",
+    "advanced excel": "excel", "ms excel": "excel", "microsoft excel": "excel",
+    "js": "javascript", "node": "javascript", "node.js": "javascript", "react.js": "javascript", "react": "javascript",
+    "amazon web services": "aws", "google cloud platform": "gcp", "google cloud": "gcp", "microsoft azure": "azure",
+    "scikit-learn": "machine learning", "sklearn": "machine learning", "tensorflow": "machine learning",
+    "pytorch": "machine learning"
+}
+
+
+def _canonical_skill(skill: str) -> str:
+    s = skill.lower().strip()
+    return _CANONICAL_MAP.get(s, s)
+
 
 def _label(s: int) -> str:
     return "Strong" if s >= 80 else "Good" if s >= 60 else "Needs Work" if s >= 40 else "Weak"
@@ -38,15 +60,12 @@ def _score_range(s: int) -> str:
 
 @dataclass
 class DimScore:
-    name: str;
-    weight: float;
-    raw_score: int;
-    weighted: float
-    label: str;
-    score_range: str
+    name: str
+    weight: float
+    score: int
+    confidence: str
     evidence: list[str] = field(default_factory=list)
-    penalties: list[str] = field(default_factory=list)
-    explanation: str = ""
+    reasoning: str = ""
 
 
 @dataclass
@@ -55,302 +74,308 @@ class ScoringResult:
     overall_score: int
     overall_range: str
     overall_label: str
-    confidence: str
-    tier_mode: str = "FRESHER"
+    classification: str
+    is_transition: bool
+    transition_score: int | None = None
     missing_critical: list[str] = field(default_factory=list)
 
     def dim(self, name: str) -> DimScore | None:
         return next((d for d in self.dimensions if d.name == name), None)
 
 
-# ── Dimension 1: ATS Compatibility ────────────────────────────────────────────
-def _ats(parsed: ParsedResume, extr_conf: float, weight: float) -> DimScore:
-    pts = 0;
-    ev = [];
-    pen = []
-    c = parsed.contact
-    if parsed.name:             pts += 8;  ev.append(f"Name: {parsed.name}")
-    if c.get("email"):          pts += 8;  ev.append("Email present")
-    if c.get("phone"):          pts += 7;  ev.append("Phone present")
-    if c.get("linkedin") or c.get("github"): pts += 7; ev.append("Professional link present")
-    for sec, w in [("education", 12), ("skills", 12), ("projects", 10), ("summary", 6)]:
-        if sec in parsed.sections_found:
-            pts += w; ev.append(f"{sec.title()} section present")
-        else:
-            pen.append(f"Missing {sec.title()} section")
-    if extr_conf >= 0.75:
-        pts += 30; ev.append("High PDF extraction quality")
-    elif extr_conf >= 0.45:
-        pts += 18; pen.append("Moderate extraction quality")
-    else:
-        pts += 6;  pen.append("Low extraction confidence")
-    raw = min(100, pts)
-    return DimScore("ATS Compatibility", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Parsability, contact info, section clarity, and PDF quality.")
+# ── Chronological Lifecycles Engine ───────────────────────────────────────────
+def _calculate_total_experience(parsed: ParsedResume) -> tuple[float, list[str]]:
+    """
+    Extracts and merges all historical timeline chunks from text blobs.
+    Enforces distinct overlapping bounds tracking.
+    """
+    blobs = parsed.experience + parsed.internship + parsed.projects
+    text_pool = " ".join(blobs)
+    matches = _DATE_RE.findall(text_pool)
 
+    intervals: list[tuple[int, int]] = []
+    evidence: list[str] = []
 
-# ── Dimension 2: Skills Evidence ──────────────────────────────────────────────
-def _skills(parsed: ParsedResume, emb: EmbeddingResult, weight: float) -> DimScore:
-    pts = 0;
-    ev = [];
-    pen = []
-    if not parsed.skills:
-        return DimScore("Skills Evidence", weight, 0, 0.0, "Weak", "0–10", [], ["No skills section found"],
-                        "No skills section detected — critical gap.")
-    ev.append(f"{len(parsed.skills)} skills listed")
-    pts += int(emb.support_ratio * 60)
-    if emb.support_ratio >= 0.7:
-        ev.append(f"{int(emb.support_ratio * 100)}% of skills backed by evidence")
-    elif emb.support_ratio >= 0.4:
-        pen.append(f"{len(emb.unsupported)} skills lack project evidence")
-    else:
-        pen.append(f"{len(emb.unsupported)} skills unsupported — add project evidence")
-    skill_count = len(parsed.skills)
-    if skill_count >= 10:
-        pts += 25; ev.append("Good skill variety (10+)")
-    elif skill_count >= 6:
-        pts += 15; ev.append("Adequate skill count (6–9)")
-    else:
-        pts += 5;  pen.append("Very few skills — expand this section")
+    # Simple month conversion utility
+    months_map = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10,
+                  "nov": 11, "dec": 12}
 
-    # Adaptive fallback if file does not exist locally yet
-    p = _DATA / "tech_skills.json"
-    if p.exists():
+    for start_m, start_y, end_m, end_y in matches:
         try:
-            taxonomy = json.loads(p.read_text())
-            skills_lower = {s.lower() for s in parsed.skills}
-            cats = sum(1 for items in taxonomy.values() if any(i in skills_lower for i in items))
-            pts += min(cats * 3, 15)
-            if cats >= 3: ev.append(f"Skills span {cats} technical categories")
-        except Exception:
-            pts += 10
-    else:
-        pts += 10
+            s_year = int(start_y)
+            s_month = months_map.get(start_m.lower()[:3], 1) if start_m else 1
+            start_total_months = (s_year * 12) + s_month
 
-    raw = min(100, pts)
-    return DimScore("Skills Evidence", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Skills backed by project/experience evidence via semantic matching.")
-
-
-# ── Dimension 3: Project Quality ──────────────────────────────────────────────
-def _projects(parsed: ParsedResume, weight: float) -> DimScore:
-    pts = 0;
-    ev = [];
-    pen = []
-    if not parsed.projects:
-        pen.append("No Projects section — critical structural risk. Add projects.")
-        return DimScore("Project Quality", weight, 5, 5 * weight, "Weak", "0–10", [], pen,
-                        "Projects section is missing.")
-    pc = len(parsed.projects)
-    if pc >= 3:
-        pts += 30; ev.append(f"{pc} projects listed")
-    elif pc == 2:
-        pts += 20; ev.append("2 projects listed")
-    else:
-        pts += 10; pen.append("Only 1 project — add more depth")
-
-    p = _DATA / "tech_skills.json"
-    if p.exists():
-        try:
-            taxonomy = json.loads(p.read_text())
-            all_tech = {t for items in taxonomy.values() for t in items}
-            depths = [sum(1 for t in all_tech if t in proj.lower()) for proj in parsed.projects]
-            avg_depth = sum(depths) / max(len(depths), 1)
-            if avg_depth >= 4:
-                pts += 25; ev.append(f"Strong technical depth (avg {avg_depth:.1f} tech terms/project)")
-            elif avg_depth >= 2:
-                pts += 15; ev.append(f"Moderate depth (avg {avg_depth:.1f})")
+            if end_y.lower() in ["present", "current"]:
+                e_year, e_month = 2026, 5  # Anchored to system simulation frame coordinates
             else:
-                pts += 5;  pen.append("Projects lack tech specificity — name tools explicitly")
-        except Exception:
-            pts += 15
-    else:
-        pts += 15
+                e_year = int(end_y)
+                e_month = months_map.get(end_m.lower()[:3], 1) if end_m else 1
+            end_total_months = (e_year * 12) + e_month
 
-    total_metrics = sum(len(_NUMBER_RE.findall(proj)) for proj in parsed.projects)
-    if total_metrics >= 3:
-        pts += 25; ev.append(f"{total_metrics} measurable outcomes found")
-    elif total_metrics >= 1:
-        pts += 12; pen.append(f"{total_metrics} metric(s) — add more quantified outcomes")
+            if end_total_months >= start_total_months:
+                intervals.append((start_total_months, end_total_months))
+                evidence.append(f"Detected period: {start_m or ''} {start_y} to {end_m or end_y}")
+        except Exception:
+            continue
+
+    if not intervals:
+        return 0.0, ["No chronological dates found. Defaulting to 0 years entry tier."]
+
+    # Merge overlapping timeline boundaries
+    intervals.sort(key=lambda x: x[0])
+    merged: list[tuple[int, int]] = [intervals[0]]
+    for current in intervals[1:]:
+        prev = merged[-1]
+        if current[0] <= prev[1]:
+            merged[-1] = (prev[0], max(prev[1], current[1]))
+        else:
+            merged.append(current)
+
+    total_months = sum((end - start) for start, end in merged)
+    return round(total_months / 12, 1), evidence
+
+
+# ── Dimension 1: ATS Compatibility ────────────────────────────────────────────
+def _evaluate_ats(parsed: ParsedResume) -> DimScore:
+    pts = 0;
+    ev = [];
+    pen = []
+
+    # Map section normalization aliases across structural criteria
+    norm_sections = [s.lower() for s in parsed.sections_found]
+    has_projects = any(s in norm_sections for s in ["projects", "project experience"])
+    has_skills = any(s in norm_sections for s in ["skills", "technical skills", "soft skills"])
+
+    if parsed.name:    pts += 15; ev.append(f"Name identified: {parsed.name}")
+    if parsed.contact.get("email"): pts += 15; ev.append("Contact channel: Email present")
+    if parsed.contact.get("phone"): pts += 15; ev.append("Contact channel: Phone present")
+    if has_projects:   pts += 20; ev.append("Section layout verification: Projects block confirmed")
+    if has_skills:     pts += 20; ev.append("Section layout verification: Skills block confirmed")
+    if parsed.word_count >= 250: pts += 15; ev.append(f"Document density target hit: {parsed.word_count} words")
+
+    raw = min(100, pts)
+    return DimScore(
+        name="ATS Compatibility Analysis", weight=0.10, score=raw,
+        confidence="High" if raw >= 70 else "Medium", evidence=ev,
+        reasoning="Evaluates structural consistency, reliable parse boundaries, and file accessibility."
+    )
+
+
+# ── Dimension 2: Skill Evidence Engine ────────────────────────────────────────
+def _evaluate_skills(parsed: ParsedResume, emb: EmbeddingResult) -> DimScore:
+    ev = [];
+    pts = 0
+
+    # Map and unify text tokens to canonical base frames to prevent evidence dropping
+    canonical_skills = {_canonical_skill(s) for s in parsed.skills}
+    text_blob_lower = parsed.raw_text.lower()
+
+    verified_tokens = []
+    for s in parsed.skills:
+        c_skill = _canonical_skill(s)
+        # Check if skill or synonym maps straight into contextual experience/projects text pool
+        if c_skill in text_blob_lower or s.lower() in text_blob_lower:
+            verified_tokens.append(c_skill)
+
+    evidence_ratio = len(verified_tokens) / max(1, len(parsed.skills))
+    pts += int(evidence_ratio * 60)
+
+    if evidence_ratio >= 0.75:
+        ev.append(f"Semantic match high: {int(evidence_ratio * 100)}% of skills supported by context arrays")
     else:
-        pen.append("No measurable outcomes — add metrics/numbers")
+        ev.append(
+            f"Partial semantic map match: {len(parsed.skills) - len(verified_tokens)} skills lack project mapping")
+
+    # Reward skill deployment depth across experience
+    if len(canonical_skills) >= 8:
+        pts += 25; ev.append("Skill volume footprint: Broad (8+ standalone tools)")
+    elif len(canonical_skills) >= 4:
+        pts += 15; ev.append("Skill volume footprint: Moderate (4-7 standalone tools)")
+    else:
+        pts += 5
+
+    if emb.support_ratio > 0.5:        pts += 15; ev.append("Vector embedding matrix confirms validation support")
+
+    raw = min(100, pts)
+    return DimScore(
+        name="Skill Evidence Engine", weight=0.20, score=raw,
+        confidence="High" if len(parsed.skills) > 0 else "Low", evidence=ev,
+        reasoning="Measures semantic tool mappings and cross-section validation context."
+    )
+
+
+# ── Dimension 3: Project Quality Analysis ──────────────────────────────────────
+def _evaluate_projects(parsed: ParsedResume) -> DimScore:
+    pts = 0;
+    ev = [];
+    pen = []
+
+    if not parsed.projects:
+        return DimScore("Project Quality Analysis", 0.20, 0, "Low", ["No projects block identified"], "Critical gap.")
 
     proj_blob = " ".join(parsed.projects).lower()
+
+    # 1. Verify Deployment or Infrastructure Tracking (Do NOT just look for numbers)
+    has_github = any(kw in proj_blob for kw in ["github", "repo", "repository", "git"])
+    has_hosting = any(
+        kw in proj_blob for kw in ["live dashboard", "deployed", "netlify", "vercel", "aws link", "live app"])
+
+    if Skinner := sum(
+            1 for ind in ["architecture", "pipeline", "etl", "database", "scale", "dataset"] if ind in proj_blob):
+        pts += min(Skinner * 10, 30)
+        ev.append(f"Architectural depth signals verified inside text body ({Skinner} markers)")
+
+    if has_github:  pts += 25; ev.append("Artifact check: GitHub tracking repositories linked")
+    if has_hosting: pts += 25; ev.append("Artifact check: Live application deployment verification links present")
+
+    # Cross check action verb density frames
     verb_hits = sum(1 for v in _ACTION_VERBS if re.search(rf"\b{re.escape(v)}\b", proj_blob))
-    if verb_hits >= 5:
-        pts += 20; ev.append(f"{verb_hits} strong action verbs in projects")
-    elif verb_hits >= 2:
-        pts += 10; pen.append(f"Only {verb_hits} action verbs — use more")
-    else:
-        pen.append("No action verbs — start bullets with strong verbs")
+    pts += min(verb_hits * 4, 20)
+    if verb_hits >= 4: ev.append(f"Execution tracking: {verb_hits} clear action verbs confirmed inside project context")
 
     raw = min(100, pts)
-    return DimScore("Project Quality", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Depth, measurability, tech specificity, and action verbs in projects.")
+    return DimScore(
+        name="Project Quality Analysis", weight=0.20, score=raw,
+        confidence="High" if (has_github or has_hosting) else "Medium", evidence=ev,
+        reasoning="Scores architectural framework complexity, dataset scale mapping, and validation reproducibility profiles."
+    )
 
 
-# ── Dimension 4: Impact Statements ───────────────────────────────────────────
-def _impact(parsed: ParsedResume, weight: float, tier_mode: str) -> DimScore:
+# ── Dimension 4: Impact Validation ────────────────────────────────────────────
+def _evaluate_impact(parsed: ParsedResume) -> DimScore:
     pts = 0;
-    ev = [];
-    pen = []
+    ev = []
+
     all_bullets = []
     for blob in parsed.experience + parsed.internship + parsed.projects:
         all_bullets.extend(l.strip("•·–- ").strip() for l in blob.splitlines() if l.strip())
+
     if not all_bullets:
-        return DimScore("Impact Statements", weight, 10, 10 * weight, "Weak", "5–15", [], ["No bullet points detected"],
-                        "No achievement lines found.")
-    total = len(all_bullets)
-    quantified = [b for b in all_bullets if _NUMBER_RE.search(b)]
-    q_ratio = len(quantified) / total
+        return DimScore("Impact Validation", 0.15, 0, "Low", ["No performance bullets isolated"],
+                        "Metrics context zero.")
 
-    # Experienced candidates are graded harder on metrics than freshers
-    if tier_mode == "EXPERIENCED":
-        pts += int(q_ratio * 40)
-        if q_ratio >= 0.5:
-            ev.append(f"Experienced metrics target hit: {len(quantified)}/{total} quantified")
-        else:
-            pen.append(f"Experienced curve penalty: Only {len(quantified)}/{total} bullets have numbers")
-    else:
-        pts += int(q_ratio * 35)
-        if q_ratio >= 0.3:
-            ev.append(f"Fresher metrics level hit: {len(quantified)}/{total} quantified")
-        else:
-            pen.append(f"Only {len(quantified)}/{total} bullets have numbers")
+    strong_count = 0;
+    med_count = 0;
+    weak_count = 0
 
-    verb_starts = [b for b in all_bullets if b.split() and b.split()[0].lower() in _ACTION_VERBS]
-    v_ratio = len(verb_starts) / total
-    pts += int(v_ratio * 35)
-    if v_ratio >= 0.5:
-        ev.append(f"{len(verb_starts)}/{total} bullets start with action verb")
-    else:
-        pen.append(f"Only {len(verb_starts)}/{total} bullets start with action verbs")
+    for b in all_bullets:
+        has_metric = bool(_NUMBER_RE.search(b))
+        # Check for Method/Strategy (e.g., "using...", "via...", "by optimization")
+        has_method = any(
+            kw in b.lower() for kw in ["using", "via", "through", "by designing", "optimization", "implemented"])
+        # Check for Context/Scale scale markers (e.g., names of tools, scope size "across 50k", "in Power BI")
+        has_context = len(b.split()) > 12 and any(
+            kw in b.lower() for kw in ["source", "request", "user", "dashboard", "database", "report", "server"])
 
-    passives = len(_PASSIVE_RE.findall(" ".join(all_bullets)))
-    pts += max(0, 20 - min(passives * 4, 20))
-    if passives > 2: pen.append(f"{passives} passive constructions found")
+        if has_metric and has_method and has_context:
+            strong_count += 1
+        elif has_metric and has_method:
+            med_count += 1
+        elif has_metric:
+            weak_count += 1
 
-    avg_len = sum(len(b.split()) for b in all_bullets) / total
-    if 8 <= avg_len <= 20: pts += 10; ev.append(f"Good bullet length (avg {avg_len:.0f} words)")
-    raw = min(100, pts)
-    return DimScore("Impact Statements", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Quantified achievements and strong active-voice language.")
+    pts += (strong_count * 25) + (med_count * 12) + (weak_count * 4)
+    raw = min(100, max(5, pts))
 
+    ev.append(f"Isolated {strong_count} High-Fidelity Impact statements (Metric + Method + Context)")
+    ev.append(
+        f"Isolated {med_count} Mid-Fidelity Impact statements (Metric + Method without clear structural scale context)")
+    ev.append(f"Isolated {weak_count} Raw Percentages (Unsupported raw numbers missing execution strategies)")
 
-# ── Dimension 5: Structure & Readability ──────────────────────────────────────
-def _structure(parsed: ParsedResume, weight: float) -> DimScore:
-    pts = 0;
-    ev = [];
-    pen = []
-    found = [s for s in ["education", "skills", "projects", "summary"] if s in parsed.sections_found]
-    pts += len(found) * 10;
-    ev.append(f"{len(parsed.sections_found)} sections detected")
-    if parsed.sections_missing: pen.append(f"Missing: {', '.join(parsed.sections_missing)}")
-    wc = parsed.word_count
-    if 300 <= wc <= 900:
-        pts += 30; ev.append(f"Good resume length ({wc} words)")
-    elif wc < 200:
-        pts += 10; pen.append(f"Too sparse ({wc} words)")
-    elif wc > 1100:
-        pts += 15; pen.append(f"Too long ({wc} words)")
-    c = parsed.contact
-    filled = sum(1 for v in [c.get("email"), c.get("phone"), c.get("linkedin")] if v)
-    pts += filled * 5
-    if c.get("github"):   pts += 10; ev.append("GitHub linked")
-    raw = min(100, pts)
-    return DimScore("Structure & Readability", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Section completeness, length, and contact info.")
+    return DimScore(
+        name="Impact Validation", weight=0.15, score=raw,
+        confidence="High" if strong_count >= 2 else "Medium", evidence=ev,
+        reasoning="Validates quantified outcomes strictly checking for methodology and scaling context to filter empty assertions."
+    )
 
 
-# ── Dimension 6: Authenticity & Trust ────────────────────────────────────────
-def _authenticity(ag: AntiGamingResult, weight: float) -> DimScore:
-    raw = ag.authenticity_score;
-    ev = [];
-    pen = []
-    if not ag.keyword_stuffing:
-        ev.append("No keyword stuffing detected")
-    else:
-        pen.append(f"Keyword stuffing (density: {ag.stuffing_score:.2f})")
-    if not ag.top_buzzwords:
-        ev.append("Low buzzword usage")
-    else:
-        pen.append(f"Buzzwords: {', '.join(ag.top_buzzwords[:4])}")
-    if ag.hidden_text_detected:
-        pen.append("⚠ Hidden/invisible text detected — serious red flag")
-    else:
-        ev.append("No hidden text in PDF")
-    return DimScore("Authenticity & Trust", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Keyword stuffing, buzzwords, unsupported claims, hidden text.")
+# ── Dimension 5: Authenticity & Trust Analysis ────────────────────────────────
+def _evaluate_authenticity(ag: AntiGamingResult) -> DimScore:
+    # Scale base score from baseline authenticity scores directly
+    raw = ag.authenticity_score
+    ev = []
+
+    if ag.keyword_stuffing:   ev.append(
+        f"Anomalous layout density: Keyword density trigger detected ({ag.stuffing_score:.2f})")
+    if ag.hidden_text_detected: ev.append(
+        "Malicious exploit flag: Hidden text artifacts matching background detected inside canvas layers")
+    if len(ag.top_buzzwords) > 3: ev.append(
+        f"Template phrasing density high: Found buzzwords ({', '.join(ag.top_buzzwords[:3])})")
+
+    if raw >= 80: ev.append("Profile compliance checks completely clear. High human structural integrity signature.")
+
+    return DimScore(
+        name="Authenticity and Trust Analysis", weight=0.10, score=raw,
+        confidence="High", evidence=ev,
+        reasoning="Audits hidden text artifacts, pattern template repetitions, and buzzword distribution profiles."
+    )
 
 
-# ── Dimension 7: Fresher Fairness / Senior Scale ─────────────────────────────
-def _fresher(parsed: ParsedResume, weight: float, tier_mode: str) -> DimScore:
-    pts = 0;
-    ev = [];
-    pen = []
-    if tier_mode == "EXPERIENCED":
-        # Seniority Curve: Evaluates professional workspace durability and continuity signals
-        ev.append("Experienced mode — Senior scale evaluation applied")
-        pts += 40
-        if parsed.experience:
-            pts += 40; ev.append("Robust employment records present")
-        else:
-            pts -= 20; pen.append("Experienced profiles require historical workplace verification blocks")
-        if parsed.publications: pts += 20; ev.append("Research publications recorded")
-        raw = max(0, min(100, pts))
-        return DimScore("Fresher Fairness", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                        ev, pen, "Rewards workspace tenure, continuity tracking, and technical publications.")
-
-    # Standard Fresher Mode Rules
-    ev.append("Fresher profile — experience penalty waived");
-    pts += 30
-    if parsed.projects:
-        pts += 30; ev.append(f"{len(parsed.projects)} project(s) compensate for no experience")
-    else:
-        pts -= 10; pen.append("Freshers need strong projects")
-    if parsed.certifications:   pts += 20; ev.append(f"{len(parsed.certifications)} certification(s)")
-    if parsed.internship:       pts += 20; ev.append("Internship found — good signal")
-    raw = max(0, min(100, pts))
-    return DimScore("Fresher Fairness", weight, raw, raw * weight, _label(raw), _score_range(raw),
-                    ev, pen, "Rewards projects, certifications, and internships for fresh graduates.")
-
-
-def _confidence(extr_conf: float, parsed: ParsedResume, emb: EmbeddingResult) -> str:
-    sig = 0
-    if extr_conf >= 0.75:
-        sig += 2
-    elif extr_conf >= 0.45:
-        sig += 1
-    if len(parsed.sections_found) >= 4: sig += 2
-    if not emb.fallback: sig += 2
-    return "High" if sig >= 5 else "Medium" if sig >= 3 else "Low"
-
-
+# ── Global Router Orchestration ───────────────────────────────────────────────
 def score(parsed: ParsedResume, ag: AntiGamingResult, emb: EmbeddingResult,
-          extraction_confidence: float, tier_mode: str = "FRESHER") -> ScoringResult:
+          extraction_confidence: float) -> ScoringResult:
     """
-    Computes strict rule-backed multi-dimensional evaluations.
-    Dynamically swaps weight matrices to adapt cleanly to candidate experience tiers.
+    Main orchestration loop. Compiles the strict multi-factor dimensional scoring array.
     """
-    # Dynamic Weight Assignment Matrix
-    if tier_mode == "EXPERIENCED":
-        w_ats, w_skills, w_projects, w_impact, w_struct, w_auth, w_fresh = 0.15, 0.20, 0.15, 0.25, 0.10, 0.10, 0.05
+    # 1. Run Chronological Lifecycles calculations to determine career classification
+    years_exp, date_evidence = _calculate_total_experience(parsed)
+
+    if years_exp >= 7.0:
+        tier = "Senior Professional"
+    elif years_exp >= 3.0:
+        tier = "Experienced Professional"
+    elif years_exp >= 1.0:
+        tier = "Early Career Professional"
     else:
-        w_ats, w_skills, w_projects, w_impact, w_struct, w_auth, w_fresh = 0.20, 0.20, 0.20, 0.15, 0.10, 0.10, 0.05
+        tier = "Fresh Graduate"
 
-    dims = [
-        _ats(parsed, extraction_confidence, w_ats),
-        _skills(parsed, emb, w_skills),
-        _projects(parsed, w_projects),
-        _impact(parsed, w_impact, tier_mode),
-        _structure(parsed, w_struct),
-        _authenticity(ag, w_auth),
-        _fresher(parsed, w_fresh, tier_mode)
-    ]
+    # 2. Transition Tracking Logic Block
+    text_lower = parsed.raw_text.lower()
+    cs_indicators = ["computer science", "software", "developer", "data science", "data analyst", "systems", "networks"]
+    has_cs_academic = any(
+        ind in text_lower for ind in ["b.sc cs", "m.sc cs", "mca", "b.tech computer", "b.e. computer"])
 
-    overall = int(sum(d.weighted for d in dims))
+    # Check if they are jumping tracks into tech from another engineering/science segment
+    non_cs_track = any(kw in text_lower for kw in
+                       ["biomedical", "pharmacy", "civil", "mechanical", "commerce", "accounting", "nursing",
+                        "hospital"])
+
+    is_transition = False
+    transition_score = None
+    if non_cs_track and not has_cs_academic:
+        is_transition = True
+        tier = f"{tier} (Career Transition Candidate)"
+
+        # Calculate transition readiness factor: Do they possess transferable tech skills?
+        tech_skills = ["python", "sql", "power bi", "excel", "javascript", "mysql", "tableau"]
+        hits = sum(1 for s in tech_skills if s in text_lower)
+        transition_score = min(100, hits * 20)
+
+    # 3. Assemble Evaluation Dimensions
+    dim_ats = _evaluate_ats(parsed)
+    dim_skills = _evaluate_skills(parsed, emb)
+    dim_proj = _evaluate_projects(parsed)
+    dim_impact = _evaluate_impact(parsed)
+    dim_auth = _evaluate_authenticity(ag)
+
+    # 4. Mathematical Weighted Aggregation Loop
+    dims = [dim_ats, dim_skills, dim_proj, dim_impact, dim_auth]
+
+    # Normalize baseline weights to equal 100% distribution metrics
+    total_weight = sum(d.weight for d in dims)
+    overall = int(sum((d.score * d.weight) for d in dims) / total_weight)
+
     missing = parsed.sections_missing[:]
     if not parsed.contact.get("email"): missing.append("email address")
 
-    return ScoringResult(dims, overall, _score_range(overall), _label(overall),
-                         _confidence(extraction_confidence, parsed, emb), tier_mode, missing)
+    return ScoringResult(
+        dimensions=dims,
+        overall_score=overall,
+        overall_range=_score_range(overall),
+        overall_label=_label(overall),
+        classification=tier,
+        is_transition=is_transition,
+        transition_score=transition_score,
+        missing_critical=missing
+    )
