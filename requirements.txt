@@ -1,0 +1,7 @@
+streamlit
+PyMuPDF
+pdfplumber
+sentence-transformers
+plotly
+google-generativeai
+pytest
