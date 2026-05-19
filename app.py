@@ -491,8 +491,7 @@ if app_mode == "🎯 Resume Intelligence Engine":
 
         # 4. Semantic Evidence Alignment & Variable Scoring Matrix Call
         emb = match_skills(parsed.skills, parsed.projects, parsed.experience, parsed.internship)
-        scoring = score(parsed, ag, emb, extraction.confidence,
-                        tier_mode="FRESHER" if parsed.is_fresher else "EXPERIENCED")
+        scoring = score(parsed, ag, emb, extraction.confidence)
         suggestions = gen_suggestions(parsed, scoring, ag, gemini_key)
         prog.progress(100)
 
