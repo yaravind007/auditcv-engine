@@ -1,8 +1,8 @@
 """
 core/parser.py
 ────────────────────────
-Hybrid Parse Architecture: Integrates an absolute, crash-proof AI firewall
-optimized via Design of Experiments (DoE) principles, backed by a local rule-based classifier.
+Hybrid Parse Architecture: Integrates deep multi-parameter cross-scanning logic.
+Validates transitions via project and skill metrics to prevent false rejections.
 """
 
 from __future__ import annotations
@@ -12,47 +12,47 @@ import google.generativeai as genai
 from dataclasses import dataclass, field
 
 _SECTION_MAP: dict[str, list[str]] = {
-    "summary": ["summary", "objective", "profile", "about me", "about"],
-    "education": ["education", "academic", "qualification", "degree", "university"],
-    "skills": ["skills", "technical skills", "technologies", "tools", "competencies", "tech stack"],
-    "experience": ["experience", "work experience", "employment", "professional experience"],
-    "internship": ["internship", "intern", "trainee", "apprentice"],
-    "projects": ["projects", "personal projects", "academic projects", "work samples", "portfolio"],
-    "certifications": ["certification", "certifications", "courses", "training", "credential"],
-    "achievements": ["achievements", "awards", "honors", "honours", "accomplishments"],
-    "links": ["links", "profiles", "online presence", "github", "portfolio link"],
-    "publications": ["publications", "papers", "research"],
-    "volunteering": ["volunteer", "volunteering", "community", "social work"],
+    "summary":        ["summary","objective","profile","about me","about"],
+    "education":      ["education","academic","qualification","degree","university"],
+    "skills":         ["skills","technical skills","technologies","tools","competencies","tech stack"],
+    "experience":     ["experience","work experience","employment","professional experience"],
+    "internship":     ["internship","intern","trainee","apprentice"],
+    "projects":       ["projects","personal projects","academic projects","work samples","portfolio"],
+    "certifications": ["certification","certifications","courses","training","credential"],
+    "achievements":   ["achievements","awards","honors","honours","accomplishments"],
+    "links":          ["links","profiles","online presence","github","portfolio link"],
+    "publications":   ["publications","papers","research"],
+    "volunteering":   ["volunteer","volunteering","community","social work"],
 }
 
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
-_PHONE_RE = re.compile(r"(\+?\d[\d\s\-().]{8,14}\d)")
+_EMAIL_RE    = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
+_PHONE_RE    = re.compile(r"(\+?\d[\d\s\-().]{8,14}\d)")
 _LINKEDIN_RE = re.compile(r"linkedin\.com/in/[\w\-]+", re.IGNORECASE)
-_GITHUB_RE = re.compile(r"github\.com/[\w\-]+", re.IGNORECASE)
-_URL_RE = re.compile(r"https?://[^\s]+")
-_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+_GITHUB_RE   = re.compile(r"github\.com/[\w\-]+", re.IGNORECASE)
+_URL_RE      = re.compile(r"https?://[^\s]+")
+_YEAR_RE     = re.compile(r"\b(19|20)\d{2}\b")
 
 
 @dataclass
 class ParsedResume:
-    name: str = ""
-    contact: dict = field(default_factory=dict)
-    summary: str = ""
-    education: list[str] = field(default_factory=list)
-    skills: list[str] = field(default_factory=list)
-    projects: list[str] = field(default_factory=list)
-    experience: list[str] = field(default_factory=list)
-    internship: list[str] = field(default_factory=list)
-    certifications: list[str] = field(default_factory=list)
-    achievements: list[str] = field(default_factory=list)
-    links: list[str] = field(default_factory=list)
-    publications: list[str] = field(default_factory=list)
-    volunteering: list[str] = field(default_factory=list)
-    raw_text: str = ""
-    sections_found: list[str] = field(default_factory=list)
+    name:             str       = ""
+    contact:          dict      = field(default_factory=dict)
+    summary:          str       = ""
+    education:        list[str] = field(default_factory=list)
+    skills:           list[str] = field(default_factory=list)
+    projects:         list[str] = field(default_factory=list)
+    experience:       list[str] = field(default_factory=list)
+    internship:       list[str] = field(default_factory=list)
+    certifications:   list[str] = field(default_factory=list)
+    achievements:     list[str] = field(default_factory=list)
+    links:            list[str] = field(default_factory=list)
+    publications:     list[str] = field(default_factory=list)
+    volunteering:     list[str] = field(default_factory=list)
+    raw_text:         str       = ""
+    sections_found:   list[str] = field(default_factory=list)
     sections_missing: list[str] = field(default_factory=list)
-    is_fresher: bool = False
-    word_count: int = 0
+    is_fresher:       bool      = False
+    word_count:       int       = 0
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -60,52 +60,47 @@ class ParsedResume:
 
 def classify_profile_domain(resume_text: str, api_key: str) -> dict:
     """
-    DoE Optimized Gatekeeper: Inspects text context to determine if a resume
-    genuinely belongs to Computer Science, IT, or Data domains. Rejects non-tech
-    majors (Pharmacy, Medicine, Business, Core Engineering) while keeping pipeline execution 100% crash-proof.
+    Performs deep scanning across Education, Skills, and Projects matrices.
+    If any sector demonstrates strong tech evidence, the candidate passes.
     """
-    # Defensive heuristic backup structures (Factor C)
     text_lower = resume_text.lower()
-
-    non_cs_signals = [
-        "pharmacy", "pharmacist", "pharmacology", "pharmaceutics", "b.pharm", "m.pharm", "d.pharm",
-        "medicine", "medical", "mbbs", "bds", "clinical", "hospital", "patient care", "triage", "nursing",
-        "anatomy", "pathology", "dentist", "biology", "zoology", "botany", "civil engineering",
-        "mechanical engineering", "chartered accountant", "mba", "finance analyst", "accounting"
-    ]
-
-    cs_signals = [
-        "python", "java", "sql", "javascript", "typescript", "react", "django", "fastapi", "spring boot",
-        "c++", "c#", "software engineer", "data scientist", "web developer", "cybersecurity", "devops",
-        "cloud computing", "machine learning", "deep learning", "mongodb", "postgresql", "artificial intelligence"
-    ]
-
-    # 1. Run local structural keyword scanning first as a high-fidelity benchmark
-    is_explicit_non_cs = any(sig in text_lower for sig in non_cs_signals)
-    has_tech_keywords = any(sig in text_lower for sig in cs_signals)
-
-    # 2. Determine default state if API variables are unreachable
+    
+    # ── Deterministic Scoring Weights For Fallback/Guardrail ──────────────────
+    edu_score   = 100 if any(kw in text_lower for kw in ["computer science", "information technology", "b.sc cs", "m.sc cs", "b.tech cs", "m.tech cs", "mca"]) else 0
+    
+    tech_skills = ["python", "java", "sql", "javascript", "typescript", "react", "django", "fastapi", "spring boot", "c++", "c#", "mongodb", "postgresql", "power bi", "tableau", "dax studio", "mysql"]
+    skill_hits  = sum(1 for skill in tech_skills if re.search(rf"\b{re.escape(skill)}\b", text_lower))
+    skills_score = min(100, skill_hits * 25)  # 4+ core tech skills = 100 points
+    
+    proj_indicators = ["github repo", "live dashboard", "presentation video", "project challenge", "deployed", "built a dashboard", "data modeling", "performed etl"]
+    proj_hits       = sum(1 for ind in proj_indicators if ind in text_lower)
+    projects_score  = min(100, proj_hits * 34)  # 3+ build signals = 100 points
+    
+    # Pass if any matrix factor contains strong evidence (threshold >= 75)
+    deterministic_pass = (edu_score >= 75 or skills_score >= 75 or projects_score >= 75)
+    
     if not api_key:
-        is_cs = has_tech_keywords and not is_explicit_non_cs
         return {
-            "is_computer_science": is_cs,
+            "is_computer_science": deterministic_pass,
             "is_fresher": True,
-            "extracted_skills": ["Python", "SQL"] if is_cs else []
+            "extracted_skills": ["Python", "SQL"] if deterministic_pass else []
         }
-
+        
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
-
+        
         prompt = f"""
-        You are an uncompromising ATS Routing Firewall. Your single directive is to validate if a resume genuinely belongs to a core Computer Science, Information Technology, or Data/Software Engineering field.
+        You are an advanced, analytical ATS Routing Gatekeeper. Your objective is to run a deep, multi-parameter scan on a candidate's text profile to evaluate tech alignment.
 
-        MANDATORY ROADBLOCK BOUNDARIES:
-        1. STRICT REJECTION: If this resume is primarily focused on Pharmacy, Pharmacology, Medicine, Nursing, Healthcare, Biology, Chemistry, Civil Engineering, Mechanical Engineering, Management, MBA, Commerce, Accounting, or Arts, you MUST set "is_computer_science" to false immediately.
-        2. EXCLUDE FALSE POSITIVES: Do NOT mark a resume as Computer Science just because it mentions standard digital tools like Microsoft Office, Excel, Word, PowerPoint, Windows, Windows OS, or generic web research. Look for structural computing stack indicators (e.g., coding, databases, web development, cloud, machine learning tools).
-        3. PERMITTED CHANNELS: Software Engineering, Web Development, Data Science, Data Analysis, Artificial Intelligence, Cybersecurity, DevOps, Cloud Computing, System Administration, Mobile Apps, and Network Engineering.
-        4. EXPERIENCE ROUTING: Determine if the profile indicates a Fresher (0-1 years workspace footprint, entry-level, student) or Experienced Professional.
-        5. SKILL SEPARATION: If "is_computer_science" is true, extract their specific technical tools and coding packages into the array. If false, leave the array completely empty [].
+        DEEP MATRIX SCANNING PROTOCOLS:
+        1. EDUCATION MATRIX: Identify formal computing degrees.
+        2. SKILLS MATRIX: Look for developer tools, programming languages, and engineering software packages.
+        3. PROJECTS MATRIX: Check for active development markers, portfolio references (GitHub, Live Dashboards), ETL pipelines, analytics modeling, or hackathon wins.
+
+        EVALUATION LOGIC BLOCK:
+        Even if the candidate has an unrelated formal background (e.g., Pharmacy, Medicine, Biomedical Engineering, Civil, Commerce), you MUST set "is_computer_science" to true if EITHER their Skills Matrix or Projects Matrix shows strong evidence of transition capabilities (e.g., building data engines, designing database systems, setting up BI architectures). 
+        Only set to false if ALL three matrices show zero alignment with computer systems or digital analytics architecture.
 
         You MUST output a valid JSON object matching this schema structure exactly:
         {{
@@ -113,39 +108,34 @@ def classify_profile_domain(resume_text: str, api_key: str) -> dict:
             "is_fresher": true/false,
             "extracted_skills": ["skill1", "skill2"]
         }}
-
-        Do not wrap the output in markdown boxes. Do not include conversational text.
-
-        Resume Text Content:
+        
+        Do not wrap the output in markdown boxes.
+        
+        Candidate Text Pool:
         {resume_text}
         """
-
-        # Enforce API-level JSON output parameters
+        
         response = model.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
-
-        # Clean potential layout leakages
+        
         raw_payload = response.text.strip()
         bracket_match = re.search(r'\{.*\}', raw_payload, re.DOTALL)
         if bracket_match:
             raw_payload = bracket_match.group(0)
-
+            
         result = json.loads(raw_payload)
-
-        # Override safety checking: If the model missed a strict local Pharmacy keyword flag, enforce it
-        if is_explicit_non_cs:
-            result["is_computer_science"] = False
-            result["extracted_skills"] = []
-
+        
+        # Guardrail cross-check: Force pass if local metrics find absolute project/skill depth
+        if deterministic_pass:
+            result["is_computer_science"] = True
+            
         return result
-
+        
     except Exception:
-        # High-durability fallback evaluation
-        is_cs = has_tech_keywords and not is_explicit_non_cs
         return {
-            "is_computer_science": is_cs,
+            "is_computer_science": deterministic_pass,
             "is_fresher": True,
             "extracted_skills": []
         }
