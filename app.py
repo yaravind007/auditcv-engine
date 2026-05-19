@@ -1,7 +1,7 @@
 """
-app.py — AuditCV
+app.py — AuditCV v2
 ────────────────────────
-Explainable, fairness-aware resume intelligence for freshers.
+Adaptive, AI-driven explainable resume intelligence for all Computer Science domains.
 Entry point: streamlit run app.py
 """
 
@@ -383,7 +383,7 @@ def _radar_chart(dims) -> go.Figure:
 def _generate_markdown_report(filename, scoring, ag, suggestions) -> str:
     report = [f"# AuditCV Evaluation Report — {filename}", "=" * 50 + "\n", "## OVERALL SUMMARY"]
     report.append(
-        f"- **Overall Strength:** {scoring.overall_range}\n- **Score Class:** {scoring.overall_label}\n- **Authenticity Risk:** {ag.overall_risk}\n- **Confidence Level:** {scoring.confidence}\n")
+        f"- **Overall Strength:** {scoring.overall_range}\n- **Score Class:** {scoring.overall_label}\n- **Experience Tier Mode:** {scoring.tier_mode}\n- **Authenticity Risk:** {ag.overall_risk}\n- **Confidence Level:** {scoring.confidence}\n")
     report.append("## DIMENSION BREAKDOWN")
     for d in scoring.dimensions:
         report.append(
@@ -396,6 +396,7 @@ def _build_master_prompt(filename, scoring, ag) -> str:
 
 Here is the exact analysis payload data from my audit session report:
 - Overall strength level evaluated: {scoring.overall_range} ({scoring.overall_label})
+- Experience Level Evaluation Target: {scoring.tier_mode}
 - Fraud and Authenticity Vetting Risk: {ag.overall_risk}
 - Authenticity Alignment Score: {ag.authenticity_score}/100
 
@@ -408,27 +409,12 @@ CRITICAL RULES FOR RE-WRITING MY CONTENT:
 Please review my raw text lines and rewrite them to perfectly maximize my objective strength according to this engineering framework!"""
 
 
-def _is_valid_resume_pattern(extracted_text: str) -> bool:
-    """Vets the structural integrity of the file content using anchor token thresholds."""
-    if not extracted_text or len(extracted_text.strip()) < 100:
-        return False
-
-    text_lower = extracted_text.lower()
-    resume_anchors = [
-        "education", "experience", "project", "skills", "internship",
-        "certifications", "achievements", "extracurricular", "volunteer",
-        "contact", "phone", "email", "github", "linkedin"
-    ]
-    matches = sum(1 for anchor in resume_anchors if anchor in text_lower)
-    return matches >= 3
-
-
 # ── WEBSITE TOP NAVIGATION BAR HEADER ─────────────────────────────────────────
 st.markdown("""
 <div class="navbar">
     <div>
         <span class="nav-brand">// AuditCV</span>
-        <span class="nav-tagline">Architected with AI · Engineered for Freshers</span>
+        <span class="nav-tagline">Adaptive AI Engine · Supporting all Computer Science Domains</span>
     </div>
     <div style="font-family: 'DM Mono', monospace; font-size: 0.8rem; font-weight: 500; color: #666666;">
         aravindyedida.com
@@ -457,38 +443,56 @@ if app_mode == "🎯 Resume Intelligence Engine":
     st.markdown("""
     <div class="main-title-container">
         <p class="main-title">AuditCV</p>
-        <p class="main-sub">Explainable · Fairness-aware · Deterministic scoring — Built for Freshers, Directed by Architecture</p>
+        <p class="main-sub">Adaptive Domain Mapping · Fluid Skill Extraction · Tiered Scoring for CS Freshers & Experts</p>
     </div>
     """, unsafe_allow_html=True)
 
     up_col1, up_col2 = st.columns([2, 1])
     with up_col1:
-        uploaded = st.file_uploader("Upload fresh candidate resume string data (PDF format)", type=["pdf"],
+        uploaded = st.file_uploader("Upload candidate resume string data (PDF format)", type=["pdf"],
                                     label_visibility="visible")
     with up_col2:
         st.markdown("<p style='margin-top:1.8rem;'></p>", unsafe_allow_html=True)
-        analyse_btn = st.button("🎯 Run System Vetting Audit", use_container_width=True)
+        analyse_btn = st.button("🎯 Run Adaptive Vetting Audit", use_container_width=True)
 
-    gemini_key = ""
+    # Secure Token Retrieval from Streamlit Secret Store
+    gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 
     if analyse_btn and uploaded:
         file_bytes = uploaded.read()
         prog = st.progress(0)
 
+        # 1. High-Fidelity Extraction Block
         extraction = extract(file_bytes, uploaded.name)
+        prog.progress(20)
 
-        if not _is_valid_resume_pattern(extraction.text):
+        # 2. ADAPTIVE AI DOMAIN CLASSIFIER AND PROFILE TIER GATEKEEPER
+        # Calls the dynamic parsing module to verify domain fit via Gemini
+        from core.parser import classify_profile_domain
+
+        domain_meta = classify_profile_domain(extraction.text, gemini_key)
+
+        if not domain_meta.get("is_computer_science", False):
             st.error(
-                "🚨 Wrong PDF Upload: The uploaded document does not match a typical resume pattern. Please ensure you are uploading a structured Curriculum Vitae (CV) containing standard headers like Education, Skills, or Projects.")
+                f"🚨 Domain Access Restriction: The system cannot score your resume out of the domain as it currently supports Computer Science domains only. "
+                f"However, Aravind is trying to develop and improving best upgrades in features to expand backend classification matrices soon!"
+            )
             st.stop()
 
-        prog.progress(25)
-        parsed = parse(extraction.text)
-        prog.progress(50)
+        prog.progress(40)
+
+        # 3. Fluid JSON Structural Breakdowns & Extracted Skills Handling
+        parsed = parse(extraction.text, identified_skills=domain_meta.get("extracted_skills", []))
+        parsed.is_fresher = domain_meta.get("is_fresher", True)
+
+        prog.progress(60)
         ag = ag_analyse(parsed, file_bytes)
-        prog.progress(75)
+        prog.progress(80)
+
+        # 4. Semantic Evidence Alignment & Variable Scoring Matrix Call
         emb = match_skills(parsed.skills, parsed.projects, parsed.experience, parsed.internship)
-        scoring = score(parsed, ag, emb, extraction.confidence)
+        scoring = score(parsed, ag, emb, extraction.confidence,
+                        tier_mode="FRESHER" if parsed.is_fresher else "EXPERIENCED")
         suggestions = gen_suggestions(parsed, scoring, ag, gemini_key)
         prog.progress(100)
 
@@ -530,10 +534,9 @@ if app_mode == "🎯 Resume Intelligence Engine":
             c1, c2, c3 = st.columns([1, 1, 1])
             with c1:
                 risk_cls = _risk_class(ag.overall_risk)
-                fresher_html = "<div style='margin-top:10px;'><span class='score-badge' style='background:#111111;color:#FFFFFF;border:1px solid #111111;'>FRESHER MODE</span></div>" if getattr(
-                    parsed, "is_fresher", False) else ""
+                tier_badge_txt = "FRESHER EVAL TIERS" if scoring.tier_mode == "FRESHER" else "EXPERT EVAL TIERS"
                 st.markdown(
-                    f"""<div class='score-hero'><div class='lbl' style='margin-top:0;'>// overall_strength</div><div class='score-range' style='color:{overall_color};'>{scoring.overall_range}</div><div style='font-family:DM Mono,monospace;font-size:0.8rem;color:{overall_color};margin-top:6px;'>{scoring.overall_label}</div>{fresher_html}<div style='margin-top:10px;'><span class='score-badge {risk_cls}'>AUTH RISK: {ag.overall_risk}</span></div><div style='margin-top:10px; font-family:DM Mono,monospace; font-size:0.65rem; color:#111111;'>Confidence: {scoring.confidence}</div></div>""",
+                    f"""<div class='score-hero'><div class='lbl' style='margin-top:0;'>// overall_strength</div><div class='score-range' style='color:{overall_color};'>{scoring.overall_range}</div><div style='font-family:DM Mono,monospace;font-size:0.8rem;color:{overall_color};margin-top:6px;'>{scoring.overall_label}</div><div style='margin-top:10px;'><span class='score-badge' style='background:#111111;color:#FFFFFF;'>{tier_badge_txt}</span></div><div style='margin-top:6px;'><span class='score-badge {risk_cls}'>AUTH RISK: {ag.overall_risk}</span></div><div style='margin-top:10px; font-family:DM Mono,monospace; font-size:0.65rem; color:#111111;'>Confidence: {scoring.confidence}</div></div>""",
                     unsafe_allow_html=True)
             with c2:
                 st.markdown("<p class='lbl' style='margin-top:0;'>// extraction_quality</p>", unsafe_allow_html=True)
@@ -544,12 +547,15 @@ if app_mode == "🎯 Resume Intelligence Engine":
                     for w in extraction.warnings: st.markdown(f"<div class='pen-item'>⚠ {w}</div>",
                                                               unsafe_allow_html=True)
             with c3:
-                st.markdown("<p class='lbl' style='margin-top:0;'>// missing_critical</p>", unsafe_allow_html=True)
-                if scoring.missing_critical:
-                    for m in scoring.missing_critical: st.markdown(f"<span class='pill pill-warn'>✗ {m}</span>",
-                                                                   unsafe_allow_html=True)
+                st.markdown("<p class='lbl' style='margin-top:0;'>// dynamic_extracted_skills</p>",
+                            unsafe_allow_html=True)
+                if parsed.skills:
+                    skills_html = "".join(f"<span class='pill pill-ok'>{s}</span>" for s in parsed.skills[:12])
+                    st.markdown(f"<div style='max-height:120px; overflow-y:auto;'>{skills_html}</div>",
+                                unsafe_allow_html=True)
                 else:
-                    st.markdown("<span class='pill pill-ok'>✓ All key sections present</span>", unsafe_allow_html=True)
+                    st.markdown("<span class='pill pill-warn'>✗ No distinct skills extracted</span>",
+                                unsafe_allow_html=True)
 
             st.markdown("<hr class='s'>", unsafe_allow_html=True)
             col_bar, col_radar = st.columns([1.2, 1])
@@ -569,7 +575,7 @@ if app_mode == "🎯 Resume Intelligence Engine":
                     ev_html = "".join(f"<div class='ev-item'>✓ {e}</div>" for e in dim.evidence[:2])
                     pen_html = "".join(f"<div class='pen-item'>✗ {p}</div>" for p in dim.penalties[:2])
                     st.markdown(
-                        f"""<div class='dim-card'><div class='dim-name'>// {dim.name.upper()}</div><div><span class='dim-score' style='color:{c};'>{dim.raw_score}</span><span class='dim-range'>({dim.score_range}) / 100</span></div><div class='dim-label' style='color:{c};'>{dim.label}</div><div class='dim-expl'>{dim.explanation}</div><div style='margin-top:8px;'>{ev_html}{pen_html}</div></div>""",
+                        f"""<div class='dim-card'><div class='dim-name'>// {dim.name.upper()}</div><div><span class='dim-score' style='color:{c};'>{dim.raw_score}</span><span class='dim-range'>/ 100</span></div><div class='dim-label' style='color:{c};'>{dim.label}</div><div class='dim-expl'>{dim.explanation}</div><div style='margin-top:8px;'>{ev_html}{pen_html}</div></div>""",
                         unsafe_allow_html=True)
 
         with tab2:
@@ -577,8 +583,7 @@ if app_mode == "🎯 Resume Intelligence Engine":
             with da1:
                 st.markdown("<p class='lbl'>// full_evidence_breakdown</p>", unsafe_allow_html=True)
                 for dim in scoring.dimensions:
-                    with st.expander(f"{dim.name}  ·  {dim.raw_score}/100  ·  {dim.label}"):
-                        st.markdown(f"**Weight:** {int(dim.weight * 100)}%")
+                    with st.expander(f"{dim.name}  ·  {dim.raw_score}/100"):
                         if dim.evidence:
                             st.markdown("**Evidence (what worked):**")
                             for e in dim.evidence: st.markdown(f"<div class='ev-item'>✓ {e}</div>",
@@ -602,10 +607,6 @@ if app_mode == "🎯 Resume Intelligence Engine":
                         st.markdown(
                             f"<div style='background:#FFFFFF;border:1px solid #E5E5E5;border-left:3px solid #111111;padding:6px 10px;margin-bottom:6px;font-size:0.75rem;font-family:DM Mono,monospace;color:#111111;'>{claim.claim}<br><span style='color:#666666;'>{claim.reason}</span></div>",
                             unsafe_allow_html=True)
-                if ag.suspicious_metrics:
-                    for m in ag.suspicious_metrics: st.markdown(f"<div class='pen-item'>⚠ {m}</div>",
-                                                                unsafe_allow_html=True)
-                if ag.hidden_text_detected: st.error("🚨 Hidden/invisible text detected in PDF.")
 
                 st.markdown("<hr class='s'>", unsafe_allow_html=True)
                 st.markdown("<p class='lbl'>// skill_evidence_matching</p>", unsafe_allow_html=True)
@@ -633,8 +634,6 @@ if app_mode == "🎯 Resume Intelligence Engine":
 
         with tab4:
             with st.expander("📋 Parsed Resume JSON"): st.json(parsed.to_dict())
-            with st.expander("📊 Full Scoring JSON"): st.json({"overall_score": scoring.overall_score, "dimensions": [
-                {"name": d.name, "raw_score": d.raw_score, "evidence": d.evidence} for d in scoring.dimensions]})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -655,14 +654,13 @@ elif app_mode == "👨‍💻 About Developer Portfolio":
             "#### \"Architected with AI, Directed by Strategy\"\n"
             "AuditCV was not created by simply asking an LLM to write code. "
             "It was built by mapping out a complete functional breakdown structure first. "
-            "The engineering layout, the token verification strategy, the deterministic parsing logic, "
-            "and the protection frameworks were fully architected by me and generated using clear, "
-            "modular engineering prompts.\n\n"
+            "The engineering layout, the token verification strategy, the adaptive AI parsing layers, "
+            "and the domain classification parameters were fully architected by me and generated using modular engineering prompts.\n\n"
             "This project proves that the modern developer is no longer just a coder, but an **Architect of Systems**."
         )
         st.markdown("<p class='lbl'>// Engineering Stack Ecosystem</p>", unsafe_allow_html=True)
         st.markdown(
-            "- **Orchestration Layer:** Python 3.12 & Streamlit Micro-UI framework\n- **Intelligence Processing:** Token Vector Embeddings for verification alignment\n- **Strategic Framework:** Rule-based Scoring Matrix (completely objective and deterministic)\n- **Vetting Layer:** Structural parsing algorithms checking for anomalies and keyword stuffing")
+            "- **Orchestration Layer:** Python 3.12 & Streamlit Micro-UI framework\n- **Adaptive Ingestion:** Dynamic LLM context processing (Gemini Extraction Architecture)\n- **Strategic Framework:** Rule-based Scoring Matrix (Tiered curves matching entry/expert levels)\n- **Vetting Layer:** Structural parsing algorithms checking for anomalies and keyword stuffing")
     with col_dev2:
         st.markdown("<p class='lbl'>// Digital Portals</p>", unsafe_allow_html=True)
         st.markdown("""
@@ -685,7 +683,8 @@ elif app_mode == "💬 Strategic Feedback Hub":
     </div>
     """, unsafe_allow_html=True)
 
-    WEBHOOK_URL = st.secrets.get("WEBHOOK_URL", "https://script.google.com/macros/s/REPLACE_WITH_YOUR_MACRO_ID/exec")
+    WEBHOOK_URL = st.secrets.get("WEBHOOK_URL",
+                                 "https://script.google.com/macros/s/AKfycbxxJaDlFFq3DxI7U0tlwt_14O1fIyBB0VpQ1vHRZtyTCrVtCCDn2TTlpKw9vJ2X4jRB/exec")
 
     st.markdown("<p class='lbl'>// Quantitative Evaluation</p>", unsafe_allow_html=True)
     f_col1, f_col2 = st.columns([1, 1])
@@ -722,7 +721,7 @@ elif app_mode == "💬 Strategic Feedback Hub":
 st.markdown("""
 <div class="web-footer">
     <div class="footer-left">
-        © 2026 AuditCV · Build Using AI | Build for Freshers · Fully Reproducible System Metrics.
+        © 2026 AuditCV · Built Using AI | Tailored for the Global CS Community · Fully Reproducible System Metrics.
     </div>
     <div class="footer-right">
         <a href="http://www.aravindyedida.com" target="_blank" style="color:#111111; font-family:'DM Mono', monospace; font-size:0.72rem; font-weight:bold; text-decoration:none;">🌐 portfolio</a>
